@@ -14,13 +14,15 @@ import org.apache.zookeeper.data.Stat;
 
 
 public class JobTrackerHandler {
-  private String connString = null;
-	private String localHost = null;
-	private String path = "/Jobtracker";
+	public String connString = null;
+	public String localHost = null;
+	public String path = "/Jobtracker";
 	private ZkConnector zkConnector;
 	private Watcher zkWatcher;
-	private ServerSocket sock = null;
+	private static ServerSocket sock = null;
 	private List<ACL> acl = Ids.OPEN_ACL_UNSAFE;
+	private static boolean listening = true;
+	private static int jobNum = 0;
 	
 	public JobTrackerHandler (String conn, String lhost) {
 		this.connString = conn;
@@ -29,12 +31,12 @@ public class JobTrackerHandler {
 		this.zkWatcher= getCustomWatcher() ;
 	}
 	
-	public static void main(String[] args) {
+	public void main(String[] args) {
 		try {
 			sock = new ServerSocket(8000);        
 	    	while (listening) {
-	    		int Job_ID = getJobID();
-	        	new JobTrackerHandlerThread(sock.accept(), args[0], Job_ID, zkc).start();
+	    		int jobID = getJobID();
+	    		new JobTrackerHandlerThread(sock.accept(),  getConnString(),  jobID,  getzkConn());
 	        }
 	    	sock.close();			
 	    } catch (IOException e) {
@@ -42,6 +44,19 @@ public class JobTrackerHandler {
 	        System.exit(-1);
 	    } 
 	}
+
+	public String getConnString () {
+		return this.connString;
+	}
+	
+	public ZkConnector getzkConn () {
+		return this.zkConnector;
+	}
+	
+	private synchronized static int getJobID() {
+		return jobNum++;
+	}
+
 	private Watcher getCustomWatcher() {
 		return new Watcher() {
 			@Override
