@@ -5,6 +5,7 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.util.Scanner;
 
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
@@ -20,16 +21,15 @@ public class ClientDriver {
 
 	private static String hostName;
 	private static String zooKeeperServerHost;
-	private boolean redirect = false;
+	private static boolean redirect = false;
 	private ZkConnector connector;
 	private Watcher watcher;
 	private static Socket sock = null;
 	private static ObjectOutputStream out = null;
 	private static ObjectInputStream in = null;
-	private static String userInput;
+//	private static String userInput;
 
 	public ClientDriver(String host) {
-		// TODO Auto-generated constructor stub
 		connector = new ZkConnector();
 		connector.connect(host);
 		watcher = getNewWatcher();
@@ -37,12 +37,11 @@ public class ClientDriver {
 	}
 
 	private Watcher getNewWatcher() {
-		// TODO Auto-generated method stub
 		return new Watcher() {
 
 			@Override
 			public void process(WatchedEvent event) {
-				// TODO Auto-generated method stub
+
 				handleEvent(event);
 
 			}
@@ -76,7 +75,7 @@ public class ClientDriver {
 	 * @param args
 	 */
 	public static void main(String[] args) {
-		// TODO Auto-generated method stub
+
 		if (args.length != 1) {
 			System.out.println(USAGE_MESSAGE);
 			return;
@@ -88,29 +87,164 @@ public class ClientDriver {
 			ClientDriver cd = new ClientDriver(zooKeeperServerHost);
 			Thread.sleep(5000);
 			cd.getJobTrackerIP();
-			 sock = new Socket(hostName, 8000);
-			 in = new ObjectInputStream(sock.getInputStream());
-			 out = new ObjectOutputStream(sock.getOutputStream());
-			 System.out.println("Streams online!");
-			 /*Get user input*/
-			 BufferedReader readIn = new BufferedReader(new InputStreamReader(System.in));
+			initSocket();
+			System.out.println("Streams online!");
 			 
-			 JobPacket packetToServer = new JobPacket();
+			if (!establishConnection()) {
+				return;
+			}
+			runRequestConsole();
+	 
 		} catch (InterruptedException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		} catch (UnknownHostException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		} catch (IOException e) {
-			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (ClassNotFoundException e) {
 			e.printStackTrace();
 		}
 
 	}
 
+	private static void runRequestConsole() throws IOException, ClassNotFoundException {
+		
+		String userInput;
+		
+		System.out.println("=====================Request Console========================");
+		System.out.println();
+		System.out.println("Enter job request/status/query. Enter 'quit' to exit");
+		System.out.println();
+		System.out.print(">");
+		
+		/* Get user input */
+		BufferedReader readIn = new BufferedReader(new InputStreamReader(System.in));
+		while((userInput = readIn.readLine()) != null && !userInput.equalsIgnoreCase("quit")){
+			Scanner userScan = new Scanner(userInput);
+			String command = userScan.next();
+			
+			if(command.equalsIgnoreCase("request")){
+				processRequestCommand(userScan);
+			}else if(command.equalsIgnoreCase("status")){
+				processStatusCommand();
+			}else{
+				System.err.println("Unknown Command Please try again!");
+				System.out.print(">");
+			}
+			
+			/*Once the packet is sent we wait for reply*/
+			JobPacket packetFromServerNew = new JobPacket();
+			packetFromServerNew = (JobPacket) in.readObject();
+			
+			if (packetFromServerNew.type == JobPacket.REQUEST_ACK) { 
+				System.out.println("Primary JobTracker has received the job request and is processing it");
+			}			
+			else if (packetFromServerNew.type == JobPacket.IN_PROGRESS) { 
+				System.out.println("The job request is still in progress ... ");
+			}			
+			else if (packetFromServerNew.type == JobPacket.PASSWORD_FOUND) { 
+				System.out.println("The job request has completed and the password is " + packetFromServerNew.result);
+			}			
+			else if (packetFromServerNew.type == JobPacket.PASSWORD_NOT_FOUND) { 
+				System.out.println("The job request has completed and the password was not found");
+			} 
+			else { 
+				System.out.println ("UNRECOGNIZABLE packet with type" + packetFromServerNew.type);
+			}
+			
+			System.out.print("> ");			
+		}
+		/*we have quit*/
+		JobPacket packetToServer = new JobPacket();
+		packetToServer.type = JobPacket.QUIT;
+		sendToServer(packetToServer);
+		System.out.println("Client Driver Shutting Down ... ");
+		
+		out.close();
+		in.close();
+		readIn.close();
+		sock.close();
+		
+	}
+
+	private static void processStatusCommand() {
+		if(redirect){
+			
+			redirect = false;
+			initSocket();
+			
+		}
+		
+		JobPacket packetToServer = new JobPacket();
+		packetToServer.type = JobPacket.JOB_STATUS;
+		
+		sendToServer(packetToServer);
+	}
+
+	private static void processRequestCommand(Scanner scan) {
+		if (redirect) {
+			
+			redirect = false;
+			initSocket();
+			
+		}
+		
+		String passwordHashed = scan.next();
+		
+		JobPacket packetToServer = new JobPacket();
+		packetToServer.type = JobPacket.JOB_REQUEST;
+		packetToServer.passwordHash = passwordHashed;
+		
+		sendToServer(packetToServer);
+
+	}
+
+	private static void initSocket() {
+		try {
+			sock = new Socket(hostName, 8000);
+			in = new ObjectInputStream(sock.getInputStream());
+			out = new ObjectOutputStream(sock.getOutputStream());
+		} catch (UnknownHostException e) {
+			e.printStackTrace();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+	}
+
+	private static boolean establishConnection() {
+		try {
+			JobPacket packetToServer = new JobPacket();
+			packetToServer.type = JobPacket.ESTABLISH_CONNECTION;
+			sendToServer(packetToServer);
+			/* wait for the server to reply back to the request */
+			JobPacket packet = (JobPacket) in.readObject();
+			if(packet.type == JobPacket.CONNECTION_ACK){
+				System.out.println("Connection established with primary job tracker. Ready for requests...");
+				return true;
+			}else{
+				System.err.println("Trouble connecting to primary job tracker");
+				return false;
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+		} catch (ClassNotFoundException e) {
+			e.printStackTrace();
+		}
+//		return false;
+		return false;
+	}
+
+	private static void sendToServer(JobPacket packetToServer) {
+		try {
+			out.writeObject(packetToServer);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		
+	}
+
 	private void getJobTrackerIP() {
-		// TODO Auto-generated method stub
 		ZooKeeper zookeeper = connector.getZooKeeper();
 		try {
 			Stat stat = zookeeper.exists(path, watcher);
